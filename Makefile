@@ -9,9 +9,7 @@ TARGETS ?= rv64 \
     rv64_untimed \
     pulp-open \
     pulp-open-nn \
-    pulp-open:chip/cluster/redmule=True \
-    pulp.spatz.spatz \
-    snitch_spatz \
+    pulp-open:attr.chip/cluster/has_redmule=true \
     occamy \
     siracusa \
     snitch \
@@ -23,7 +21,7 @@ TARGETS ?= rv64 \
     pulp.snitch.snitch_cluster_single \
     chimera \
     snitch_testbench \
-    magia_v2 \
+    magia_v3 \
 	mempool
 
 RUN_TARGETS = $(TARGETS) default
@@ -52,7 +50,21 @@ INSTALLDIR = install
 endif
 endif
 
+# Absolute install path, needed for things like configure --prefix
+INSTALLDIR_ABS := $(abspath $(INSTALLDIR))
+
+# Build RPATH of the model .so files, relative to where each one is installed:
+# install/lib itself, then install/lib seen from up to 5 levels of
+# install/<dir>/... (models sit up to 4 levels deep), so a moved or copied
+# install tree still finds its shared libraries.
+GVSOC_BUILD_RPATH = $$ORIGIN;$$ORIGIN/../lib;$$ORIGIN/../../lib;$$ORIGIN/../../../lib;$$ORIGIN/../../../../lib;$$ORIGIN/../../../../../lib
+
 export PATH:=$(CURDIR)/gapy/bin:$(PATH)
+
+# Module roots passed to CMake at build time and to the doc build, where
+# each module's docs/ tree gets embedded into the manual. Keep build and
+# doc in sync by sharing this list.
+GVSOC_MODULES = $(CURDIR)/engine/python;$(CURDIR)/core/models;$(CURDIR)/pulp;$(CURDIR)/pulp/models;$(CURDIR)/pulp/targets;$(CURDIR)/gvrun/python;$(CURDIR)/config_tree
 
 all: checkout build
 
@@ -81,10 +93,14 @@ gvrun.build:
 	cmake --install $(BUILDDIR)/config_tree
 
 build: gvrun.build
-	# Change directory to curdir to avoid issue with symbolic links
+	# Change directory to curdir to avoid issue with symbolic links.
+	# Bake install/lib into the build RPATH so the generated model .so files
+	# (installed as plain files, keeping their build RPATH) find the GVSoC
+	# shared libraries at run time without LD_LIBRARY_PATH.
 	cd $(CURDIR) && $(CMAKE) -S . -B $(BUILDDIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) \
 		-DCMAKE_INSTALL_PREFIX=$(INSTALLDIR) \
-		-DGVSOC_MODULES="$(CURDIR)/engine/python;$(CURDIR)/core/models;$(CURDIR)/pulp;$(CURDIR)/pulp/targets;$(CURDIR)/gvrun/python;$(CURDIR)/config_tree;$(MODULES)" \
+		'-DCMAKE_BUILD_RPATH=$(GVSOC_BUILD_RPATH)' \
+		-DGVSOC_MODULES="$(GVSOC_MODULES);$(MODULES)" \
 		-DGVSOC_TARGETS="${TARGETS}" \
 		-DCMAKE_SKIP_INSTALL_RPATH=false
 
@@ -94,6 +110,8 @@ build: gvrun.build
 
 clean:
 	rm -rf $(BUILDDIR) $(INSTALLDIR)
+
+
 
 github.test:
 	gvtest $(GVTEST_TARGET_FLAGS) --testset testset-github.cfg --max-timeout 120 --no-fail run table junit
@@ -105,12 +123,17 @@ riscv:
 test.withbuild: riscv
 	PATH=$(CURDIR)/riscv/bin:$(PATH) && gvtest --testset testset_withbuild.cfg  --thread 1 --no-fail run table junit
 
+# Build the manuals from the engine docs. Exporting GVSOC_MODULES lets the
+# Sphinx conf.py walk each module root and embed its docs/ tree (target
+# pages in the user manual, component pages in the developer manual), the
+# documentation counterpart of CMake pulling in each module's CMakeLists.
+doc: export GVSOC_MODULES := $(GVSOC_MODULES);$(MODULES)
 doc:
-	cd core/docs/user_manual && make html
-	cd core/docs/developer_manual && make html
+	cd engine/docs/user_manual && $(MAKE) html
+	cd engine/docs/developer_manual && $(MAKE) html
 	@echo
-	@echo "User documentation: core/docs/user_manual/_build/html/index.html"
-	@echo "Developper documentation: core/docs/developer_manual/_build/html/index.html"
+	@echo "User documentation: engine/docs/user_manual/_build/html/index.html"
+	@echo "Developper documentation: engine/docs/developer_manual/_build/html/index.html"
 
 
 ######################################################################
@@ -190,6 +213,6 @@ gui:
 	fi
 	cd "gui-release" && \
 	git fetch --all && \
-	git checkout 74518ac814697853f59e2343af803aaea015b49a
+	git checkout febd263c103ea1ce0de4a36caf057ac30d91cac8
 	mkdir -p $(INSTALLDIR)
-	cp -r gui-release/* $(INSTALLDIR)
+	$(MAKE) -C gui-release install INSTALLDIR=$(INSTALLDIR_ABS)
